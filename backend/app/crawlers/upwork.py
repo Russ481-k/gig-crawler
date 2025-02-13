@@ -11,72 +11,157 @@ from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
 import re
 import time
+import threading
+import random
+try:
+    import undetected_chromedriver as uc
+    from selenium_stealth import stealth
+    USE_UNDETECTED = True
+except ImportError:
+    uc = webdriver  # fallback to regular selenium
+    USE_UNDETECTED = False
 
 class UpworkCrawler(BaseCrawler):
+    _instance = None
+    _lock = threading.Lock()
+    
+    def __new__(cls):
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+            return cls._instance
+    
     def __init__(self):
-        super().__init__(base_url=settings.UPWORK_URL)
+        if not hasattr(self, '_initialized'):
+            super().__init__(base_url=settings.UPWORK_URL)
+            self._initialized = True
+            self._running = False
 
     async def crawl(self) -> List[ProjectCreate]:
-        projects = []
-        
+        if self._running:
+            self.log_info("Crawl already in progress, skipping...")
+            return []
+            
         try:
+            self._running = True
+            projects = []
+            page = 1
+            max_retries = 20
+            
             self.log_info("Starting Chrome browser...")
             options = webdriver.ChromeOptions()
-            options.add_argument('--headless')
+            # options.add_argument('--headless=new')  # headless 모드 비활성화
             options.add_argument('--no-sandbox')
-            options.add_argument('--disable-gpu')
             options.add_argument('--window-size=1920,1080')
-            options.add_argument('--ignore-certificate-errors')
-            options.add_argument('--disable-web-security')
+            
+            # 봇 감지 회피를 위한 설정
+            options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            options.add_experimental_option('useAutomationExtension', False)
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            
+            # 기본 설정만 유지
+            options.add_argument('--disable-gpu')
             options.add_argument('--disable-dev-shm-usage')
-            options.add_argument('--enable-unsafe-swiftshader')
-            options.add_argument('--disable-software-rasterizer')
-            options.add_argument('--disable-webgl')
-            options.add_argument('--no-first-run')
-            options.add_argument('--no-service-autorun')
-            options.add_argument('--password-store=basic')
+            options.add_argument('--disable-web-security')
             options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36')
             
             driver = webdriver.Chrome(options=options)
-            driver.implicitly_wait(20)
+            driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                'source': '''
+                    delete Object.getPrototypeOf(navigator).webdriver;
+                    window.chrome = { runtime: {} };
+                    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                '''
+            })
             
-            try:
-                self.log_info(f"Navigating to: {self.base_url}")
-                driver.get(self.base_url)
+            # 첫 페이지 로드
+            self.log_info(f"Navigating to initial page: {self.base_url}")
+            driver.get(self.base_url)
+            
+            # stealth 관련 코드 주석처리
+            # stealth(
+            #     driver,
+            #     languages=["en-US", "en"],
+            #     vendor="Google Inc.",
+            #     platform="Win32",
+            #     webgl_vendor="Intel Inc.",
+            #     renderer="Intel Iris OpenGL Engine",
+            #     fix_hairline=True,
+            # )
+            
+            # CDP 명령어로 봇 감지 회피
+            driver.execute_cdp_cmd('Network.setUserAgentOverride', {
+                "userAgent": 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+                "platform": "Windows"
+            })
+            driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                'source': '''
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    })
+                '''
+            })
+            
+            while len(projects) < self.target_project_count:
+                try:
+                    # 페이지 로드 대기
+                    self.log_info("Waiting for project cards to load...")
+                    wait = WebDriverWait(driver, 3)
+                    
+                    # 여러 셀렉터 시도
+                    selectors = [
+                        ".job-tile",
+                        "[data-test='job-tile']",
+                        ".up-card-section"
+                    ]
+                    
+                    element_found = False
+                    for selector in selectors:
+                        try:
+                            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
+                            element_found = True
+                            break
+                        except:
+                            continue
+                    
+                    if not element_found:
+                        raise Exception("No job listings found")
+                    
+                    # HTML 파싱
+                    soup = BeautifulSoup(driver.page_source, 'html.parser')
+                    project_cards = soup.select('.job-tile') or soup.select('[data-test="job-tile"]')
+                    
+                    if not project_cards:
+                        raise Exception("No project cards found after parsing")
+                    
+                    self.log_info(f"Found {len(project_cards)} project cards")
+                    
+                    for card in project_cards:
+                        if len(projects) >= self.target_project_count:
+                            break
+                            
+                        try:
+                            project = await self.parse_project(card)
+                            if project:
+                                projects.append(project)
+                                self.log_info(f"Successfully parsed project: {project.title} ({len(projects)}/{self.target_project_count})")
+                        except Exception as e:
+                            self.log_error(f"Error parsing project: {str(e)}")
+                            continue
+                    
+                    break  # 첫 페이지만 수집하고 종료
                 
-                self.log_info("Waiting for project cards to load...")
-                wait = WebDriverWait(driver, 20)
-                wait.until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "article.job-tile"))
-                )
+                except Exception as e:
+                    self.log_error(f"Error parsing page: {str(e)}")
+                    break
                 
-                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(2)
-                
-                self.log_info("Parsing content...")
-                soup = BeautifulSoup(driver.page_source, 'html.parser')
-                project_cards = soup.select('article.job-tile')
-                
-                self.log_info(f"Found {len(project_cards)} project cards")
-                
-                for card in project_cards:
-                    try:
-                        project = await self.parse_project(card)
-                        if project:
-                            projects.append(project)
-                            self.log_info(f"Successfully parsed project: {project.title}")
-                    except Exception as e:
-                        self.log_error(f"Error parsing project: {str(e)}")
-                        continue
-                        
-            finally:
+        finally:
+            self._running = False
+            if 'driver' in locals():
                 driver.quit()
-                self.log_info("Browser closed")
-                
-        except Exception as e:
-            self.log_error(f"Crawling failed: {str(e)}")
-            
-        return projects
+                self.log_info(f"Browser closed. Total projects collected: {len(projects)}")
+        
+        return projects[:self.target_project_count]
 
     async def parse_project(self, card) -> ProjectCreate:
         try:
@@ -169,11 +254,11 @@ class UpworkCrawler(BaseCrawler):
                 work_type=work_type,
                 payment_type=payment_type,
                 original_url=full_url,
-                metadata={
-                    "category": "",  # 업워크는 카테고리가 명시적이지 않음
-                    "location": "",  # 원격 작업이므로 위치 없음
+                project_metadata={
+                    "category": "",
+                    "location": "",
                     "term": project_length,
-                    "applicants": 0,  # 업워크는 지원자 수 비공개
+                    "applicants": 0,
                     "budget_text": budget_text,
                     "project_type": "remote",
                     "work_conditions": {

@@ -11,6 +11,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
+import time
 
 class FreemoaCrawler(BaseCrawler):
     def __init__(self):
@@ -19,6 +20,8 @@ class FreemoaCrawler(BaseCrawler):
 
     async def crawl(self) -> List[ProjectCreate]:
         projects = []
+        page = 1
+        max_retries = 20  # 최대 시도 페이지 수 제한
         
         try:
             self.log_info("Starting Chrome browser...")
@@ -33,49 +36,114 @@ class FreemoaCrawler(BaseCrawler):
             options.add_argument('--no-first-run')
             options.add_argument('--no-service-autorun')
             options.add_argument('--password-store=basic')
+            # 봇 탐지 우회를 위한 추가 옵션
+            options.add_argument('--disable-blink-features=AutomationControlled')
+            options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            options.add_experimental_option('useAutomationExtension', False)
             options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36')
             
             driver = webdriver.Chrome(options=options)
-            driver.implicitly_wait(5)
+            # JavaScript 실행을 통한 webdriver 흔적 제거
+            driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                'source': '''
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    })
+                '''
+            })
             
-            try:
-                self.log_info(f"Navigating to: {self.base_url}")
-                driver.get(self.base_url)  # settings에서 가져온 URL 사용
-                
-                # 페이지 로드 대기
-                self.log_info("Waiting for project cards to load...")
-                wait = WebDriverWait(driver, 10)
-                wait.until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "li.proj-list-item_li_new"))
-                )
-                
-                # HTML 파싱
-                self.log_info("Parsing content...")
-                soup = BeautifulSoup(driver.page_source, 'html.parser')
-                project_cards = soup.select('li.proj-list-item_li_new')
-                
-                self.log_info(f"Found {len(project_cards)} project cards")
-                
-                for i, card in enumerate(project_cards, 1):
+            driver.implicitly_wait(10)
+            
+            while len(projects) < self.target_project_count and page <= max_retries:
+                try:
+                    url = f"{self.base_url}{page}"
+                    self.log_info(f"Navigating to page {page}: {url} (collected: {len(projects)})")
+                    driver.get(url)
+                    
+                    # 알림창 처리
                     try:
-                        project = await self.parse_project(card)
-                        if project:
-                            projects.append(project)
-                            self.log_info(f"Successfully parsed project: {project.title}")
+                        alert = driver.switch_to.alert
+                        alert_text = alert.text
+                        self.log_info(f"Alert detected: {alert_text}")
+                        alert.accept()
+                    except:
+                        pass
+                    
+                    # 페이지 로드 대기
+                    self.log_info("Waiting for project cards to load...")
+                    wait = WebDriverWait(driver, 10)
+                    wait.until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "li.proj-list-item_li_new"))
+                    )
+                    
+                    # 잠시 대기 추가
+                    time.sleep(2)
+                    
+                    # HTML 파싱
+                    self.log_info("Parsing content...")
+                    soup = BeautifulSoup(driver.page_source, 'html.parser')
+                    project_cards = soup.select('li.proj-list-item_li_new')
+                    
+                    self.log_info(f"Found {len(project_cards)} project cards")
+                    
+                    # 프로젝트 파싱 및 추가
+                    for i, card in enumerate(project_cards):
+                        if len(projects) >= self.target_project_count:
+                            break
+                        
+                        try:
+                            project = await self.parse_project(card)
+                            if project:
+                                projects.append(project)
+                                self.log_info(f"Successfully parsed project: {project.title} ({len(projects)}/{self.target_project_count})")
+                        except Exception as e:
+                            self.log_error(f"Error parsing project card {i}: {str(e)}")
+                            continue
+                    
+                    # 프로젝트 ID 추출 로직 추가
+                    project_id = card.get('data-project-id', '')  # 실제 속성명은 확인 필요
+                    
+                    # 목표 달성 체크
+                    if len(projects) >= self.target_project_count:
+                        self.log_info(f"Reached target project count: {len(projects)}")
+                        break
+                    
+                    # 다음 페이지 체크
+                    try:
+                        # 페이지네이션 버튼 확인
+                        next_page_exists = False
+                        pagination = driver.find_element(By.ID, "projectPagination")
+                        if pagination:
+                            # 현재 페이지 번호 이후의 버튼이 있는지 확인
+                            current_page_btn = pagination.find_element(By.CSS_SELECTOR, f".pageGoBtn[data-pagenum='{page}']")
+                            next_page_btn = pagination.find_element(By.CSS_SELECTOR, f".pageGoBtn[data-pagenum='{page + 1}']")
+                            if next_page_btn:
+                                next_page_exists = True
+                        
+                        if not next_page_exists:
+                            self.log_info("No more pages available")
+                            break
                     except Exception as e:
-                        self.log_error(f"Error parsing project card {i}: {str(e)}")
-                        continue
-                
-            finally:
-                driver.quit()
-                self.log_info("Browser closed")
+                        self.log_info(f"No next page found: {str(e)}")
+                        break
+                    
+                    page += 1
+                    
+                except Exception as e:
+                    self.log_error(f"Error on page {page}: {str(e)}")
+                    break
                 
         except Exception as e:
             error_msg = f"Crawling failed: {str(e)}"
             self.log_error(error_msg)
             raise Exception(error_msg)
             
-        return projects
+        finally:
+            if 'driver' in locals():
+                driver.quit()
+                self.log_info(f"Browser closed. Total projects collected: {len(projects)}")
+                
+        return projects[:self.target_project_count]  # 최대 50개만 반환
 
     async def parse_project(self, card) -> ProjectCreate:
         try:

@@ -4,6 +4,8 @@ from .api.endpoints import projects
 from .models import project
 from sqlalchemy import create_engine
 from .config import settings
+from .services.crawler_scheduler import CrawlerScheduler
+import asyncio
 
 app = FastAPI(title="Project Crawler API")
 
@@ -38,3 +40,8 @@ app.include_router(projects.router, prefix="/api", tags=["projects"])
 @app.get("/")
 async def root():
     return {"message": "Project Crawler API"}
+
+@app.on_event("startup")
+async def startup_event():
+    scheduler = CrawlerScheduler()
+    asyncio.create_task(scheduler.start())

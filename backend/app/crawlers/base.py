@@ -9,6 +9,7 @@ class BaseCrawler(ABC):
     
     def __init__(self, base_url: str):
         self.base_url = base_url
+        self.target_project_count = 50  # 목표 프로젝트 수
         self.projects: List[ProjectCreate] = []
         self.logger = setup_logger(self.__class__.__name__)
         

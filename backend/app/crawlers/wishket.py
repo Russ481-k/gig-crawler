@@ -19,6 +19,8 @@ class WishketCrawler(BaseCrawler):
 
     async def crawl(self) -> List[ProjectCreate]:
         projects = []
+        page = 1
+        max_retries = 20  # 최대 시도 페이지 수 제한
         
         try:
             self.log_info("Starting Chrome browser...")
@@ -31,14 +33,14 @@ class WishketCrawler(BaseCrawler):
             driver = webdriver.Chrome(options=options)
             driver.implicitly_wait(10)
             
-            try:
-                # 1페이지만 크롤링
-                self.log_info(f"Navigating to: {self.base_url}")
-                driver.get(self.base_url)
+            while len(projects) < self.target_project_count and page <= max_retries:
+                url = f"{self.base_url}/projects/?page={page}"
+                self.log_info(f"Navigating to page {page}: {url} (collected: {len(projects)})")
+                driver.get(url)
                 
                 # 페이지 로드 대기
                 self.log_info("Waiting for project cards to load...")
-                WebDriverWait(driver, 30).until(
+                WebDriverWait(driver, 3).until(
                     EC.presence_of_element_located((By.CLASS_NAME, "project-info-box"))
                 )
                 
@@ -50,25 +52,41 @@ class WishketCrawler(BaseCrawler):
                 self.log_info(f"Found {len(project_cards)} project cards")
                 
                 for i, card in enumerate(project_cards, 1):
+                    if len(projects) >= self.target_project_count:
+                        break
+                    
                     try:
                         project = await self.parse_project(card)
                         if project:
                             projects.append(project)
-                            self.log_info(f"Successfully parsed project: {project.title}")
+                            self.log_info(f"Successfully parsed project: {project.title} ({len(projects)}/{self.target_project_count})")
                     except Exception as e:
                         self.log_error(f"Error parsing project card {i}: {str(e)}")
                         continue
-                    
-            finally:
-                driver.quit()
-                self.log_info("Browser closed")
                 
-        except Exception as e:
-            error_msg = f"Crawling failed: {str(e)}"
-            self.log_error(error_msg)
-            raise Exception(error_msg)
+                # 목표 달성 체크
+                if len(projects) >= self.target_project_count:
+                    self.log_info(f"Reached target project count: {len(projects)}")
+                    break
+                
+                # 다음 페이지 체크
+                try:
+                    next_button = driver.find_element(By.CSS_SELECTOR, ".pagination .next:not(.disabled)")
+                    if not next_button:
+                        self.log_info("No more pages available")
+                        break
+                except:
+                    self.log_info("No next page button found")
+                    break
+                
+                page += 1
+                
+        finally:
+            if 'driver' in locals():
+                driver.quit()
+                self.log_info(f"Browser closed. Total projects collected: {len(projects)}")
             
-        return projects
+        return projects[:self.target_project_count]
 
     async def parse_project(self, card) -> ProjectCreate:
         try:
