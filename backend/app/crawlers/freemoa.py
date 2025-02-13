@@ -79,6 +79,16 @@ class FreemoaCrawler(BaseCrawler):
 
     async def parse_project(self, card) -> ProjectCreate:
         try:
+            # 프로젝트 ID 추출
+            project_id = ""
+            try:
+                # data-pno 속성에서 ID 찾기
+                project_title_elem = card.select_one('div.projTitle')
+                if project_title_elem and 'data-pno' in project_title_elem.attrs:
+                    project_id = project_title_elem['data-pno']
+            except:
+                pass
+
             # 제목
             title_elem = card.select_one('p.title')
             if not title_elem:
@@ -86,36 +96,34 @@ class FreemoaCrawler(BaseCrawler):
             title = title_elem.text.strip()
             
             # URL
-            project_id = card.select_one('div.projTitle')['data-pno']
             original_url = f"https://www.freemoa.net/m4/s42?pno={project_id}"
             
             # 프로젝트 타입 확인 (상주/도급)
             work_type = WorkType.UNDEFINED
             payment_type = PaymentType.FIXED
-            project_type = ""
-            budget_elem = None
             
-            # 상주/도급 구분
             type_elem_onsite = card.select_one('p.d')  # 상주
             type_elem_contract = card.select_one('p.b')  # 도급
             
             if type_elem_onsite and "상주" in type_elem_onsite.text:
                 work_type = WorkType.ONSITE
                 payment_type = PaymentType.MONTHLY
-                project_type = "상주"
-                # 월 임금으로 표시
-                budget_elem = card.select_one('div.projectInfo p:has(span:contains("월 임금")) b')
-            elif type_elem_contract:  # 도급 태그가 존재하면
-                work_type = WorkType.REMOTE  # 도급은 기본적으로 원격으로 처리
+            elif type_elem_contract:
+                work_type = WorkType.REMOTE
                 payment_type = PaymentType.FIXED
-                project_type = "도급"
-                # 예상비용으로 표시
-                budget_elem = card.select_one('div.projectInfo p:has(span:contains("예상비용")) b')
             
             # 예산/급여 처리
             budget_min = 0
             budget_max = 0
             budget_text = ""
+            budget_elem = None
+            if work_type == WorkType.REMOTE:
+                # 예상비용으로 표시
+                budget_elem = card.select_one('div.projectInfo p:has(span:contains("예상비용")) b')
+            elif work_type == WorkType.ONSITE:
+                # 월 임금으로 표시
+                budget_elem = card.select_one('div.projectInfo p:has(span:contains("월 임금")) b')
+            
             if budget_elem:
                 budget_text = budget_elem.text.strip()
                 if '~' in budget_text:
@@ -190,12 +198,14 @@ class FreemoaCrawler(BaseCrawler):
                         "contract_type": "기간제" if "기간제" in description else "정규직"
                     }
             
+            project_type = "상주" if work_type == WorkType.ONSITE else "원격"
+            
             return ProjectCreate(
+                platform="freemoa",
                 title=title,
                 description=description or category,
                 budget_min=budget_min,
                 budget_max=budget_max,
-                platform="freemoa",
                 original_url=original_url,
                 currency="KRW",
                 posted_date=datetime.now(),
@@ -212,6 +222,7 @@ class FreemoaCrawler(BaseCrawler):
                     "applicants": applicants,
                     "budget_text": budget_text,
                     "project_type": project_type,
+                    "project_id": project_id,
                     "work_conditions": work_conditions,
                     "required_skills": [skill.strip() for skill in category.split(',')] if category else []
                 }

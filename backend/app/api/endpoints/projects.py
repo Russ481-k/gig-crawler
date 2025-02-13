@@ -6,7 +6,8 @@ from ...models.project import Project as ProjectModel
 from ...crawlers.wishket import WishketCrawler
 from ...crawlers.freemoa import FreemoaCrawler
 from ...crawlers.upwork import UpworkCrawler
-from ...crawlers.fiverr import FiverrCrawler
+from ...crawlers.guru import GuruCrawler
+from ...crawlers.freelancer import FreelancerCrawler
 from ...db.database import get_db
 from ...core.logging import setup_logger
 import json
@@ -32,7 +33,7 @@ async def start_crawling(db: Session = Depends(get_db)):
         "wishket": WishketCrawler(),
         "freemoa": FreemoaCrawler(),
         "upwork": UpworkCrawler(),
-        "fiverr": FiverrCrawler()
+        "guru": GuruCrawler()
     }
     
     results = []
@@ -74,7 +75,7 @@ async def start_crawling(db: Session = Depends(get_db)):
 @router.get("/stats")
 async def get_stats(db: Session = Depends(get_db)):
     stats = {}
-    platforms = ["wishket", "freemoa", "upwork", "fiverr"]
+    platforms = ["wishket", "freemoa", "upwork", "guru"]
     
     for platform in platforms:
         count = db.query(ProjectModel).filter(
@@ -92,7 +93,8 @@ async def test_crawl(platform: str):
         "wishket": WishketCrawler,
         "freemoa": FreemoaCrawler,
         "upwork": UpworkCrawler,
-        "fiverr": FiverrCrawler
+        "guru": GuruCrawler,
+        "freelancer": FreelancerCrawler
     }
     
     try:

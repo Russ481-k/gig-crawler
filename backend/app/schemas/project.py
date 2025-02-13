@@ -4,11 +4,10 @@ from typing import Optional, List, Dict, Any
 from enum import Enum
 
 class WorkType(str, Enum):
-    ONSITE = "상주"
-    REMOTE = "원격"
-    HYBRID = "혼합"
-    CONTRACT = "도급"
-    UNDEFINED = "미정의"
+    ONSITE = "onsite"     # 상주
+    REMOTE = "remote"     # 원격/도급
+    HYBRID = "hybrid"     # 혼합
+    UNDEFINED = "undefined"  # 미정의
 
 class PaymentType(str, Enum):
     FIXED = "fixed"      # 프로젝트 단위

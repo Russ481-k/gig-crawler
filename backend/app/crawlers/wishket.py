@@ -15,7 +15,7 @@ import time
 class WishketCrawler(BaseCrawler):
     def __init__(self):
         # settings에서 URL을 가져와서 부모 클래스 초기화
-        super().__init__(base_url="https://www.wishket.com/project/?d=A4FwvCCGDODWD6AjGBTAJgMhQYzWAKgE4CuKQA%3D%3D")
+        super().__init__(base_url=settings.WISHKET_URL)
 
     async def crawl(self) -> List[ProjectCreate]:
         projects = []
@@ -72,6 +72,19 @@ class WishketCrawler(BaseCrawler):
 
     async def parse_project(self, card) -> ProjectCreate:
         try:
+            # 프로젝트 ID 추출
+            project_id = ""
+            try:
+                # BeautifulSoup에서는 select_one을 사용
+                link_elem = card.select_one('a.project-link')
+                if link_elem and 'href' in link_elem.attrs:
+                    # URL 패턴: /project/142399/
+                    id_match = re.search(r'/project/(\d+)/', link_elem['href'])
+                    if id_match:
+                        project_id = id_match.group(1)
+            except:
+                pass
+
             # 제목
             title = card.select_one('p.subtitle-1-half-medium').text.strip()
             
@@ -110,9 +123,21 @@ class WishketCrawler(BaseCrawler):
             subcategory = card.select_one('p.project-field-subcategory')
             subcategory = subcategory.text.strip() if subcategory else ""
             
-            # 프로젝트 타입
+            # 근무 형태 결정
+            work_type = WorkType.UNDEFINED
+            payment_type = PaymentType.FIXED
             project_type = card.select_one('div.project-type-mark')
             project_type = project_type.text.strip() if project_type else ""
+
+            if "상주" in project_type:
+                work_type = WorkType.ONSITE
+                payment_type = PaymentType.MONTHLY
+            elif "원격" in project_type:
+                work_type = WorkType.REMOTE
+            elif "혼합" in project_type:
+                work_type = WorkType.HYBRID
+            else:
+                work_type = WorkType.REMOTE  # 기본값은 원격으로 설정
             
             # 기술 스택
             skills_container = card.select_one('div.skill-stack')
@@ -172,27 +197,12 @@ class WishketCrawler(BaseCrawler):
             if location:
                 description += f" | 위치: {location}"
             
-            # 근무 형태 및 급여 형태 결정
-            work_type = WorkType.UNDEFINED
-            payment_type = PaymentType.FIXED
-            
-            # 근무 형태 매핑
-            if "상주" in project_type:
-                work_type = WorkType.ONSITE
-                payment_type = PaymentType.MONTHLY
-            elif "원격" in project_type:
-                work_type = WorkType.REMOTE
-            elif "혼합" in project_type:
-                work_type = WorkType.HYBRID
-            else:
-                work_type = WorkType.REMOTE  # 기본값은 원격으로 설정
-            
             return ProjectCreate(
+                platform="wishket",
                 title=title,
                 description=description,
                 budget_min=budget_min,
                 budget_max=budget_max,
-                platform="wishket",
                 original_url=original_url,
                 currency="KRW",
                 posted_date=datetime.now(),  # 실제 게시일은 상세 페이지에서 가져와야 함
@@ -225,7 +235,8 @@ class WishketCrawler(BaseCrawler):
                     "client_info": {
                         "name": client_name,
                         "rating": client_rating
-                    }
+                    },
+                    "project_id": project_id
                 }
             )
             
